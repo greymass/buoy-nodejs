@@ -1,7 +1,7 @@
 # default configuration, override in config/local.toml or with env vars
 
 # application name used for logging and service namespace
-name = 'bakeos'
+name = 'nodejs'
 
 # port to run http server on
 port = 8090
