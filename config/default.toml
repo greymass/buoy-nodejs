@@ -1,0 +1,12 @@
+# default configuration, override in config/local.toml or with env vars
+
+# application name used for logging and service namespace
+name = 'bakeos'
+
+# port to run http server on
+port = 8090
+
+# logging output, can be repeated
+[[log]]
+level = 'debug'
+out = 'stdout' # path or stdout/err
