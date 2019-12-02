@@ -8,17 +8,22 @@
   "dependencies": {
     "bunyan": "^2.0.2",
     "config": "^3.1.0",
+    "lru-cache": "^5.1.1",
     "toml": "^2.3.3",
     "ws": "^7.0.1"
   },
   "devDependencies": {
     "@types/bunyan": "^1.8.6",
-    "@types/config": "^0.0.34",
+    "@types/config": "^0.0.36",
+    "@types/lru-cache": "^5.1.0",
     "@types/node": "^12.0.8",
     "@types/ws": "^6.0.1",
     "onchange": "^6.0.0",
+    "prettier": "^1.19.1",
     "ts-node": "^8.3.0",
-    "tslint": "^5.17.0",
+    "tslint": "^5.20.1",
+    "tslint-config-prettier": "^1.18.0",
+    "tslint-plugin-prettier": "^2.0.1",
     "typescript": "^3.5.2"
   }
 }

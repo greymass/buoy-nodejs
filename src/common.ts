@@ -1,5 +1,5 @@
 import * as bunyan from 'bunyan'
-import * as config from 'config'
+import config from 'config'
 
 export const logger = bunyan.createLogger({
     name: config.get('name'),
@@ -11,5 +11,5 @@ export const logger = bunyan.createLogger({
         } else {
             return {level, path: out}
         }
-    })
+    }),
 })

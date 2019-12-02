@@ -24,7 +24,8 @@ dev: node_modules
 
 .PHONY: lint
 lint: node_modules
-	tslint -p tsconfig.json -c tslint.json -t stylish --fix
+#	make refuses to find this on $PATH, finds onchange in dev target above ¯\_(ツ)_/¯
+	./node_modules/.bin/tslint -p tsconfig.json -c tslint.json -t stylish --fix
 
 node_modules: package.json
 	yarn install --non-interactive --frozen-lockfile

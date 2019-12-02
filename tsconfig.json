@@ -1,13 +1,12 @@
 {
-  "compilerOptions": {
-    "lib": ["esnext"],
-    "module": "commonjs",
-    "moduleResolution": "node",
-    "outDir": "lib",
-    "strict": true,
-    "target": "esnext"
-  },
-  "include": [
-    "src/**/*.ts"
-  ]
+    "compilerOptions": {
+        "esModuleInterop": true,
+        "lib": ["esnext"],
+        "module": "commonjs",
+        "moduleResolution": "node",
+        "outDir": "lib",
+        "strict": true,
+        "target": "esnext"
+    },
+    "include": ["src/**/*.ts"]
 }
