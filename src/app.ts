@@ -10,11 +10,78 @@ import version from './version'
 // simple http post > websocket forwarder
 // handles only one connection per UUID at a time
 
+const HEARTBEAT_INTERVAL = 10 * 1000
+
 const httpServer = http.createServer(handleRequest)
 const websocketServer = new WebSocket.Server({server: httpServer})
-const connections = new Map<string, WebSocket>()
+const connections = new Map<string, Connection>()
 const waiting = new Map<string, Function>()
-const cache = new LRU<string, Buffer>({maxAge: 60 * 60 * 1000})
+const cache = new LRU<string, Buffer>({
+    maxAge: 60 * 60 * 1000, // 1 hour
+    max: 5e8, // 500 mb
+    length: (item) => item.byteLength,
+})
+
+class Connection {
+    static seq = 0
+
+    alive: boolean
+    closed: boolean
+    id: number
+
+    private cleanupCallback: () => void
+    private socket: WebSocket
+    private timer: NodeJS.Timeout
+    private log: typeof logger
+
+    constructor(socket: WebSocket, cleanup: () => void) {
+        this.id = ++Connection.seq
+        this.log = logger.child({conn: this.id})
+        this.socket = socket
+        this.closed = false
+        this.alive = true
+        this.cleanupCallback = cleanup
+        this.socket.on('close', () => {
+            this.didClose()
+        })
+        this.socket.on('pong', () => {
+            this.alive = true
+        })
+        this.timer = setInterval(() => {
+            if (this.alive) {
+                this.alive = false
+                this.socket.ping()
+            } else {
+                this.destroy()
+            }
+        }, HEARTBEAT_INTERVAL)
+    }
+
+    private didClose() {
+        this.log.debug({alive: this.alive, closed: this.closed}, 'did close')
+        this.alive = false
+        clearTimeout(this.timer)
+        if (this.closed === false) {
+            this.cleanupCallback()
+        }
+        this.closed = true
+    }
+
+    send(data: Buffer) {
+        this.log.debug({size: data.byteLength}, 'send data')
+        this.socket.send(data)
+    }
+
+    close(code?: number, reason?: string) {
+        this.socket.close(code, reason)
+        this.didClose()
+    }
+
+    destroy() {
+        this.socket.terminate()
+        this.didClose()
+    }
+}
 
 function getUUID(request: http.IncomingMessage) {
     const url = new URL(request.url || '', 'http://localhost')
@@ -27,27 +94,26 @@ function getUUID(request: http.IncomingMessage) {
 
 async function handleConnection(socket: WebSocket, request: http.IncomingMessage) {
     const uuid = getUUID(request)
-    const log = logger.child({uuid})
-    if (connections.has(uuid)) {
-        log.warn('replacing existing socket connection')
-        connections.get(uuid)!.close(4001, 'Replaced by other connection')
-    } else {
-        log.info('socket connected')
-    }
-    connections.set(uuid, socket)
-    socket.once('close', (code, reason) => {
-        log.info({code, reason}, 'socket closed')
+    const connection = new Connection(socket, () => {
+        log.info('connection closed')
         let existing = connections.get(uuid)
-        if (existing === socket) {
+        if (existing && existing.id === connection.id) {
             connections.delete(uuid)
-        } else {
-            log.info('banani')
         }
     })
+    const log = logger.child({uuid, conn: connection.id})
+    if (connections.has(uuid)) {
+        log.info('replacing existing connection')
+        connections.get(uuid)!.close(4001, 'Replaced by other connection')
+    } else {
+        log.info('new connection')
+    }
+    connections.set(uuid, connection)
     if (waiting.has(uuid)) {
-        waiting.get(uuid)!(socket)
+        log.debug('resolving waiting connection')
+        waiting.get(uuid)!(connection)
     } else if (cache.has(uuid)) {
-        log.info('forwarding buffered message')
+        log.debug('forwarding buffered message')
         socket.send(cache.get(uuid)!)
         cache.del(uuid)
     }
@@ -66,38 +132,34 @@ async function handlePost(request: http.IncomingMessage, response: http.ServerRe
     const log = logger.child({uuid})
     const data = await readBody(request)
     if (data.byteLength === 0) {
-        throw new HttpError('Unable to forward empty body', 400)
+        throw new HttpError('Unable to forward empty message', 400)
     }
-    const existingSocket = connections.get(uuid)
-    if (existingSocket) {
-        // recipient already connected, just forward data
-        existingSocket.send(data)
-        response.setHeader('x-buoy-delivery', 'delivered')
-        log.info('data delivered')
-    } else if (request.headers['x-buoy-wait']) {
-        // wait for delivery
+    let connection = connections.get(uuid)
+    if (!connection && request.headers['x-buoy-wait']) {
         const deliveryTimeout = Math.min(Number(request.headers['x-buoy-wait']), 60 * 60) * 1000
         if (!Number.isFinite(deliveryTimeout)) {
-            throw new HttpError('Invalid x-buoy-wait timeout', 400)
+            throw new HttpError('Invalid X-Buoy-Wait timeout', 400)
         }
         log.info({timeout: deliveryTimeout}, 'waiting for client to connect')
-        await new Promise((resolve, reject) => {
-            waiting.set(uuid, (socket: WebSocket) => {
+        connection = await new Promise<Connection>((resolve, reject) => {
+            waiting.set(uuid, (result: Connection) => {
                 waiting.delete(uuid)
-                socket.send(data)
-                resolve()
+                resolve(result)
             })
             setTimeout(() => {
                 waiting.delete(uuid)
                 reject(new HttpError('Timed out waiting for connection', 408))
             }, deliveryTimeout)
         })
-        response.setHeader('x-buoy-delivery', 'delivered')
-        log.info('data delivered')
+    }
+    if (connection) {
+        connection.send(data)
+        response.setHeader('X-Buoy-Delivery', 'delivered')
+        log.info({conn: connection.id}, 'data delivered')
     } else {
-        // else we buffer the data and replay it when the recipient connects
+        log.info('buffering data')
         cache.set(uuid, data)
-        response.setHeader('x-buoy-delivery', 'buffered')
+        response.setHeader('X-Buoy-Delivery', 'buffered')
     }
 }
 
@@ -115,9 +177,8 @@ function readBody(request: http.IncomingMessage) {
 }
 
 websocketServer.on('connection', (socket, request) => {
-    logger.debug('new connection')
     handleConnection(socket as any, request).catch((error) => {
-        logger.warn(error, 'error handling websocket connection')
+        logger.error(error, 'error handling websocket connection')
         socket.close()
     })
 })
@@ -141,7 +202,7 @@ function handleRequest(request: http.IncomingMessage, response: http.ServerRespo
                 response.statusCode = error.statusCode
                 response.write(error.message)
             } else {
-                logger.warn(error, 'unexpected error handling post request')
+                logger.error(error, 'unexpected error handling post request')
                 response.statusCode = 500
                 response.write('Internal server error')
             }
