@@ -13,6 +13,8 @@ POST -> WebSocket forwarder
 
 `X-Buoy-Wait` can be specified in number of seconds to wait for the data to be delivered to a listener, will return a `408` if the data cannot be delivered within time limit. Will always have `X-Buoy-Delivery: delivered` on a successful request.
 
+`X-Buoy-Soft-Wait` can be specified in number of seconds to wait for the data to be delivered to a listener, will return a `202` if the data cannot be delivered within time limit.
+
 ## Run with docker
 
 ```

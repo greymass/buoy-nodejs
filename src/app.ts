@@ -135,12 +135,14 @@ async function handlePost(request: http.IncomingMessage, response: http.ServerRe
         throw new HttpError('Unable to forward empty message', 400)
     }
     let connection = connections.get(uuid)
-    if (!connection && request.headers['x-buoy-wait']) {
-        const deliveryTimeout = Math.min(Number(request.headers['x-buoy-wait']), 60 * 60) * 1000
+    const waitHeader = request.headers['x-buoy-wait'] || request.headers['x-buoy-soft-wait']
+    if (!connection && waitHeader) {
+        const deliveryTimeout = Math.min(Number(waitHeader), 60 * 60) * 1000
         if (!Number.isFinite(deliveryTimeout)) {
-            throw new HttpError('Invalid X-Buoy-Wait timeout', 400)
+            throw new HttpError('Invalid wait timeout', 400)
         }
-        log.info({timeout: deliveryTimeout}, 'waiting for client to connect')
+        const soft = request.headers['x-buoy-soft-wait'] !== undefined
+        log.info({timeout: deliveryTimeout, soft}, 'waiting for client to connect')
         connection = await new Promise<Connection>((resolve, reject) => {
             waiting.set(uuid, (result: Connection) => {
                 waiting.delete(uuid)
@@ -148,7 +150,16 @@ async function handlePost(request: http.IncomingMessage, response: http.ServerRe
             })
             setTimeout(() => {
                 waiting.delete(uuid)
-                reject(new HttpError('Timed out waiting for connection', 408))
+                if (soft) {
+                    log.info('soft timeout, buffering data')
+                    cache.set(uuid, data)
+                    if (!response.headersSent) {
+                        response.setHeader('X-Buoy-Delivery', 'buffered')
+                    }
+                    reject(new HttpError('Timed out waiting for connection, message buffered', 202))
+                } else {
+                    reject(new HttpError('Timed out waiting for connection', 408))
+                }
             }, deliveryTimeout)
         })
     }
