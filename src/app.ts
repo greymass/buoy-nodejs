@@ -15,7 +15,7 @@ const HEARTBEAT_INTERVAL = 10 * 1000
 const httpServer = http.createServer(handleRequest)
 const websocketServer = new WebSocket.Server({server: httpServer})
 const connections = new Map<string, Connection>()
-const waiting = new Map<string, Function>()
+const waiting = new Map<string, (conn: Connection) => void>()
 const cache = new LRU<string, Buffer>({
     maxAge: 60 * 60 * 1000, // 1 hour
     max: 5e8, // 500 mb
@@ -96,7 +96,7 @@ async function handleConnection(socket: WebSocket, request: http.IncomingMessage
     const uuid = getUUID(request)
     const connection = new Connection(socket, () => {
         log.info('connection closed')
-        let existing = connections.get(uuid)
+        const existing = connections.get(uuid)
         if (existing && existing.id === connection.id) {
             connections.delete(uuid)
         }
@@ -220,7 +220,7 @@ export async function main() {
         throw new Error('Invalid port number')
     }
     logger.info({version}, 'starting')
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
         httpServer.listen(port, resolve)
         httpServer.once('error', reject)
     })
