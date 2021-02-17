@@ -47,6 +47,9 @@ class Connection {
         this.socket.on('pong', () => {
             this.alive = true
         })
+        this.socket.on('error', (error) => {
+            this.log.warn(error, 'socket error')
+        })
         this.timer = setInterval(() => {
             if (this.alive) {
                 this.alive = false
