@@ -18,5 +18,4 @@ switch (brokerConf.type) {
 }
 
 export default broker
-
-export type {Broker, DeliveryState, SendOptions, Unsubscriber, Updater} from './broker'
+export * from './broker'

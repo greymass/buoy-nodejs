@@ -15,6 +15,11 @@ export interface SendOptions {
     requireDelivery?: boolean
 }
 
+export interface SendContext {
+    /** May be set by broker to allow sender to abort an ongoing send. */
+    cancel?: () => void
+}
+
 /** Can be called to cancel a subscription. */
 export type Unsubscriber = () => void
 
@@ -23,7 +28,12 @@ export type Updater = (payload: Buffer) => void
 
 export interface Broker {
     /** Send payload to channel and optionally wait for delivery.  */
-    send(channel: string, payload: Buffer, options: SendOptions): Promise<DeliveryState>
+    send(
+        channel: string,
+        payload: Buffer,
+        options: SendOptions,
+        ctx?: SendContext
+    ): Promise<DeliveryState>
     /** Subscribe to payloads on a channel. */
     subscribe(channel: string, updater: Updater): Promise<Unsubscriber>
 }

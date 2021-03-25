@@ -5,7 +5,7 @@ import * as WebSocket from 'ws'
 
 import {logger} from './common'
 import version from './version'
-import broker from './broker'
+import broker, {SendContext} from './broker'
 
 const HEARTBEAT_INTERVAL = 10 * 1000
 
@@ -113,6 +113,12 @@ async function handlePost(request: http.IncomingMessage, response: http.ServerRe
     if (data.byteLength === 0) {
         throw new HttpError('Unable to forward empty message', 400)
     }
+    const ctx: SendContext = {}
+    request.once('close', () => {
+        if (ctx.cancel) {
+            ctx.cancel()
+        }
+    })
     const waitHeader = request.headers['x-buoy-wait'] || request.headers['x-buoy-soft-wait']
     const requireDelivery = !!request.headers['x-buoy-wait']
     let wait = 0
@@ -123,11 +129,13 @@ async function handlePost(request: http.IncomingMessage, response: http.ServerRe
         }
     }
     try {
-        const delivery = await broker.send(uuid, data, {wait, requireDelivery})
+        const delivery = await broker.send(uuid, data, {wait, requireDelivery}, ctx)
         response.setHeader('X-Buoy-Delivery', delivery)
         log.info({delivery}, 'message dispatched')
     } catch (error) {
-        if (error.code === 'E_TIMEOUT') {
+        if (error.code === 'E_CANCEL') {
+            log.info('delivery cancelled')
+        } else if (error.code === 'E_TIMEOUT') {
             throw new HttpError('Timed out waiting for connection', 408)
         } else {
             throw error
@@ -164,6 +172,12 @@ function handleRequest(request: http.IncomingMessage, response: http.ServerRespo
     if (request.method !== 'POST') {
         response.setHeader('Allow', 'POST, OPTIONS')
         response.statusCode = request.method === 'OPTIONS' ? 200 : 405
+        response.end()
+        return
+    }
+    if (request.url === '/test') {
+        response.statusCode = 200
+        response.write('Ok')
         response.end()
         return
     }

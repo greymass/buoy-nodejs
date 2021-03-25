@@ -1,5 +1,5 @@
 import type Logger from 'bunyan'
-import {Broker, DeliveryState, SendOptions, Updater} from './broker'
+import {Broker, DeliveryState, SendContext, SendOptions, Updater} from './broker'
 
 import LRUCache from 'lru-cache'
 
@@ -14,6 +14,13 @@ class TimeoutError extends Error {
     code = 'E_TIMEOUT'
     constructor(timeout: number) {
         super(`Timed out after ${timeout}ms`)
+    }
+}
+
+class CancelError extends Error {
+    code = 'E_CANCEL'
+    constructor() {
+        super('Cancelled')
     }
 }
 
@@ -53,9 +60,18 @@ export class MemoryBroker implements Broker {
         }
     }
 
-    async send(channel: string, payload: Buffer, options: SendOptions) {
+    async send(channel: string, payload: Buffer, options: SendOptions, ctx?: SendContext) {
+        let cancelled = false
+        if (ctx) {
+            ctx.cancel = () => {
+                cancelled = true
+            }
+        }
         try {
             const updaters = await this.waitForSubscribers(channel, (options.wait || 0) * 1000)
+            if (cancelled) {
+                throw new CancelError()
+            }
             this.logger.debug({channel}, 'direct delivery to %d subscriber(s)', updaters.length)
             for (const updater of updaters) {
                 updater(payload)
@@ -63,6 +79,9 @@ export class MemoryBroker implements Broker {
             return DeliveryState.delivered
         } catch (error) {
             if (error instanceof TimeoutError && !options.requireDelivery) {
+                if (cancelled) {
+                    throw new CancelError()
+                }
                 this.logger.debug({channel}, 'buffered delivery')
                 this.cache.set(channel, payload)
                 return DeliveryState.buffered
