@@ -1,27 +1,18 @@
 import config from 'config'
 import * as http from 'http'
-import LRU from 'lru-cache'
 import {URL} from 'url'
 import * as WebSocket from 'ws'
 
 import {logger} from './common'
 import version from './version'
-
-// simple http post > websocket forwarder
-// handles only one connection per UUID at a time
+import broker from './broker'
 
 const HEARTBEAT_INTERVAL = 10 * 1000
 
 const httpServer = http.createServer(handleRequest)
 const websocketServer = new WebSocket.Server({server: httpServer})
-const connections = new Map<string, Connection>()
-const waiting = new Map<string, (conn: Connection) => void>()
-const cache = new LRU<string, Buffer>({
-    maxAge: 60 * 60 * 1000, // 1 hour
-    max: 5e8, // 500 mb
-    length: (item) => item.byteLength,
-})
 
+/** A WebSocket connection. */
 class Connection {
     static seq = 0
 
@@ -90,7 +81,7 @@ function getUUID(request: http.IncomingMessage) {
     const url = new URL(request.url || '', 'http://localhost')
     const uuid = url.pathname.slice(1)
     if (uuid.length < 10) {
-        throw new HttpError('Invalid UUID', 400)
+        throw new HttpError('Invalid channel name', 400)
     }
     return uuid
 }
@@ -99,27 +90,12 @@ async function handleConnection(socket: WebSocket, request: http.IncomingMessage
     const uuid = getUUID(request)
     const connection = new Connection(socket, () => {
         log.info('connection closed')
-        const existing = connections.get(uuid)
-        if (existing && existing.id === connection.id) {
-            connections.delete(uuid)
-        }
+        unsubscribe()
     })
     const log = logger.child({uuid, conn: connection.id})
-    if (connections.has(uuid)) {
-        log.info('replacing existing connection')
-        connections.get(uuid)!.close(4001, 'Replaced by other connection')
-    } else {
-        log.info('new connection')
-    }
-    connections.set(uuid, connection)
-    if (waiting.has(uuid)) {
-        log.debug('resolving waiting connection')
-        waiting.get(uuid)!(connection)
-    } else if (cache.has(uuid)) {
-        log.debug('forwarding buffered message')
-        socket.send(cache.get(uuid)!)
-        cache.del(uuid)
-    }
+    const unsubscribe = await broker.subscribe(uuid, (data) => {
+        connection.send(data)
+    })
 }
 
 class HttpError extends Error {
@@ -137,43 +113,25 @@ async function handlePost(request: http.IncomingMessage, response: http.ServerRe
     if (data.byteLength === 0) {
         throw new HttpError('Unable to forward empty message', 400)
     }
-    let connection = connections.get(uuid)
     const waitHeader = request.headers['x-buoy-wait'] || request.headers['x-buoy-soft-wait']
-    if (!connection && waitHeader) {
-        const deliveryTimeout = Math.min(Number(waitHeader), 60 * 60) * 1000
-        if (!Number.isFinite(deliveryTimeout)) {
+    const requireDelivery = !!request.headers['x-buoy-wait']
+    let wait = 0
+    if (waitHeader) {
+        wait = Math.min(Number(waitHeader), 120)
+        if (!Number.isFinite(wait)) {
             throw new HttpError('Invalid wait timeout', 400)
         }
-        const soft = request.headers['x-buoy-soft-wait'] !== undefined
-        log.info({timeout: deliveryTimeout, soft}, 'waiting for client to connect')
-        connection = await new Promise<Connection>((resolve, reject) => {
-            waiting.set(uuid, (result: Connection) => {
-                waiting.delete(uuid)
-                resolve(result)
-            })
-            setTimeout(() => {
-                waiting.delete(uuid)
-                if (soft) {
-                    log.info('soft timeout, buffering data')
-                    cache.set(uuid, data)
-                    if (!response.headersSent) {
-                        response.setHeader('X-Buoy-Delivery', 'buffered')
-                    }
-                    reject(new HttpError('Timed out waiting for connection, message buffered', 202))
-                } else {
-                    reject(new HttpError('Timed out waiting for connection', 408))
-                }
-            }, deliveryTimeout)
-        })
     }
-    if (connection) {
-        connection.send(data)
-        response.setHeader('X-Buoy-Delivery', 'delivered')
-        log.info({conn: connection.id}, 'data delivered')
-    } else {
-        log.info('buffering data')
-        cache.set(uuid, data)
-        response.setHeader('X-Buoy-Delivery', 'buffered')
+    try {
+        const delivery = await broker.send(uuid, data, {wait, requireDelivery})
+        response.setHeader('X-Buoy-Delivery', delivery)
+        log.info({delivery}, 'message dispatched')
+    } catch (error) {
+        if (error.code === 'E_TIMEOUT') {
+            throw new HttpError('Timed out waiting for connection', 408)
+        } else {
+            throw error
+        }
     }
 }
 
@@ -198,6 +156,7 @@ websocketServer.on('connection', (socket, request) => {
 })
 
 function handleRequest(request: http.IncomingMessage, response: http.ServerResponse) {
+    response.setHeader('Server', `buoy/${version}`)
     response.setHeader('Access-Control-Allow-Origin', '*')
     response.setHeader('Access-Control-Allow-Headers', 'X-Buoy-Wait')
     response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
@@ -241,9 +200,9 @@ export async function main() {
     logger.info({port}, 'server running')
 }
 
-function ensureExit(code: number) {
+function exit(code: number) {
     process.exitCode = code
-    process.nextTick(() => {
+    setImmediate(() => {
         process.exit(code)
     })
 }
@@ -251,10 +210,10 @@ function ensureExit(code: number) {
 if (module === require.main) {
     process.once('uncaughtException', (error) => {
         logger.error(error, 'Uncaught exception')
-        ensureExit(1)
+        exit(1)
     })
     main().catch((error) => {
         logger.fatal(error, 'Unable to start application')
-        ensureExit(1)
+        exit(1)
     })
 }

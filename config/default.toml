@@ -6,6 +6,12 @@ name = 'buoy'
 # port to run http server on
 port = 8090
 
+# broker options
+[broker]
+type = 'memory'
+max_age = 3600 # seconds
+max_size = 500 # megabytes
+
 # logging output, can be repeated
 [[log]]
 level = 'debug'
