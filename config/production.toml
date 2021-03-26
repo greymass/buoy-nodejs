@@ -1,3 +1,11 @@
+num_workers = 0
+
+# broker options
+[broker]
+type = 'mqtt'
+mqtt_url = 'mqtt://mqtt:8883'
+mqtt_expiry = 600 # seconds
+
 [[log]]
 level = 'info'
 out = 'stdout'

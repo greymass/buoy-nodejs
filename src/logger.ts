@@ -1,7 +1,8 @@
 import * as bunyan from 'bunyan'
+import * as cluster from 'cluster'
 import config from 'config'
 
-export const logger = bunyan.createLogger({
+let logger = bunyan.createLogger({
     name: config.get('name'),
     streams: (config.get('log') as any[]).map(({level, out}) => {
         if (out === 'stdout') {
@@ -13,3 +14,9 @@ export const logger = bunyan.createLogger({
         }
     }),
 })
+
+if (cluster.isWorker) {
+    logger = logger.child({worker: cluster.worker.id})
+}
+
+export default logger

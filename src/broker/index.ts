@@ -1,21 +1,37 @@
 import config from 'config'
-import {logger as baseLogger} from '../common'
-import {MemoryBroker} from './memory-broker'
+import * as cluster from 'cluster'
+
+import baseLogger from '../logger'
 import {Broker} from './broker'
 
-const logger = baseLogger.child({module: 'broker'})
+import {MemoryBroker} from './memory-broker'
+import {MqttBroker} from './mqtt-broker'
 
-let broker: Broker
-const brokerConf = config.get('broker') as any
+async function setupBroker() {
+    const logger = baseLogger.child({module: 'broker'})
+    const brokerConf = config.get('broker') as any
+    logger.debug('using %s broker', brokerConf.type)
 
-switch (brokerConf.type) {
-    case 'memory':
-        logger.info({config: brokerConf}, 'using memory broker')
-        broker = new MemoryBroker(brokerConf, logger)
-        break
-    default:
-        throw new Error(`Unknown broker type ${brokerConf.type}`)
+    let broker: Broker
+
+    switch (brokerConf.type) {
+        case 'memory':
+            if (!cluster.isMaster) {
+                throw new Error('Memory broker cannot be used with more than one worker')
+            }
+            broker = new MemoryBroker(brokerConf, logger)
+            break
+        case 'mqtt':
+            broker = new MqttBroker(brokerConf, logger)
+            break
+        default:
+            throw new Error(`Unknown broker type ${brokerConf.type}`)
+    }
+
+    await broker.init()
+
+    return broker
 }
 
-export default broker
+export default setupBroker
 export * from './broker'

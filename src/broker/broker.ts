@@ -36,4 +36,8 @@ export interface Broker {
     ): Promise<DeliveryState>
     /** Subscribe to payloads on a channel. */
     subscribe(channel: string, updater: Updater): Promise<Unsubscriber>
+    /** Called during setup, can be used to initialize broker. */
+    init(): Promise<void>
+    /** Perform a health check on the broker, should throw if there is a problem. */
+    healthCheck(): Promise<void>
 }

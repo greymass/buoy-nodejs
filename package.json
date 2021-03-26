@@ -1,6 +1,6 @@
 {
   "name": "buoy",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "engines": {
     "node": ">=10"
@@ -9,6 +9,7 @@
     "bunyan": "^1.8.14",
     "config": "^3.3.2",
     "lru-cache": "^6.0.0",
+    "mqtt": "^4.2.6",
     "toml": "2.x",
     "ws": "^7.3.1"
   },

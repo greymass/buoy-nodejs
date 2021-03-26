@@ -1,7 +1,22 @@
 version: '2'
 services:
-  development:
+  buoy:
     build: .
     ports:
       - "8090:8090"
+    depends_on:
+      - mqtt
     restart: on-failure
+    networks:
+      - mqtt
+  mqtt:
+    image: eclipse-mosquitto
+    volumes:
+      - mosquitto:/mosquitto
+      - ./contrib/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      - mqtt
+networks:
+  mqtt:
+volumes:
+  mosquitto:

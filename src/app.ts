@@ -1,16 +1,17 @@
 import config from 'config'
+import * as cluster from 'cluster'
 import * as http from 'http'
-import {URL} from 'url'
+import * as os from 'os'
 import * as WebSocket from 'ws'
+import {URL} from 'url'
 
-import {logger} from './common'
+import logger from './logger'
 import version from './version'
-import broker, {SendContext} from './broker'
+import setupBroker, {Broker, SendContext} from './broker'
+
+let broker: Broker
 
 const HEARTBEAT_INTERVAL = 10 * 1000
-
-const httpServer = http.createServer(handleRequest)
-const websocketServer = new WebSocket.Server({server: httpServer})
 
 /** A WebSocket connection. */
 class Connection {
@@ -134,7 +135,7 @@ async function handlePost(request: http.IncomingMessage, response: http.ServerRe
         log.info({delivery}, 'message dispatched')
     } catch (error) {
         if (error.code === 'E_CANCEL') {
-            log.info('delivery cancelled')
+            throw new HttpError('Request cancelled', 410)
         } else if (error.code === 'E_TIMEOUT') {
             throw new HttpError('Timed out waiting for connection', 408)
         } else {
@@ -156,13 +157,6 @@ function readBody(request: http.IncomingMessage) {
     })
 }
 
-websocketServer.on('connection', (socket, request) => {
-    handleConnection(socket as any, request).catch((error) => {
-        logger.error(error, 'error handling websocket connection')
-        socket.close()
-    })
-})
-
 function handleRequest(request: http.IncomingMessage, response: http.ServerResponse) {
     response.setHeader('Server', `buoy/${version}`)
     response.setHeader('Access-Control-Allow-Origin', '*')
@@ -179,6 +173,21 @@ function handleRequest(request: http.IncomingMessage, response: http.ServerRespo
         response.statusCode = 200
         response.write('Ok')
         response.end()
+        return
+    }
+    if (request.url === '/health_check') {
+        broker
+            .healthCheck()
+            .then(() => {
+                response.statusCode = 200
+                response.write('Ok')
+                response.end()
+            })
+            .catch((error) => {
+                response.statusCode = 500
+                response.write(error.message || String(error))
+                response.end()
+            })
         return
     }
     handlePost(request, response)
@@ -201,33 +210,119 @@ function handleRequest(request: http.IncomingMessage, response: http.ServerRespo
         })
 }
 
+async function setup(port: number) {
+    const httpServer = http.createServer(handleRequest)
+    const websocketServer = new WebSocket.Server({server: httpServer})
+    broker = await setupBroker()
+    await new Promise<void>((resolve, reject) => {
+        httpServer.listen(port, resolve)
+        httpServer.once('error', reject)
+    })
+
+    websocketServer.on('connection', (socket, request) => {
+        handleConnection(socket as any, request).catch((error) => {
+            logger.error(error, 'error handling websocket connection')
+            socket.close()
+        })
+    })
+
+    return () =>
+        new Promise<void>((resolve, reject) => {
+            httpServer.close((error) => {
+                if (error) {
+                    reject(error)
+                } else {
+                    resolve()
+                }
+            })
+        })
+}
+
 export async function main() {
     const port = Number.parseInt(config.get('port'))
     if (!Number.isFinite(port)) {
         throw new Error('Invalid port number')
     }
-    logger.info({version}, 'starting')
-    await new Promise<void>((resolve, reject) => {
-        httpServer.listen(port, resolve)
-        httpServer.once('error', reject)
-    })
-    logger.info({port}, 'server running')
-}
+    if (cluster.isMaster) {
+        logger.info({version}, 'starting')
+    }
+    let numWorkers = Number.parseInt(config.get('num_workers'), 10)
+    if (numWorkers === 0) {
+        numWorkers = os.cpus().length
+    }
+    const isMaster = cluster.isMaster && numWorkers > 1
+    let teardown: () => Promise<void> | undefined
+    if (isMaster) {
+        logger.info('spawning %d workers', numWorkers)
+        const runningPromises: Promise<void>[] = []
+        for (let i = 0; i < numWorkers; i++) {
+            const worker = cluster.fork()
+            const running = new Promise<void>((resolve, reject) => {
+                worker.once('message', (message) => {
+                    if (message.error) {
+                        reject(new Error(message.error))
+                    } else {
+                        resolve()
+                    }
+                })
+            })
+            runningPromises.push(running)
+        }
+        await Promise.all(runningPromises)
+        logger.info({port}, 'server running')
+    } else {
+        try {
+            teardown = await setup(port)
+            if (process.send) {
+                process.send({ready: true})
+            }
+        } catch (error) {
+            if (process.send) {
+                process.send({error: error.message || String(error)})
+            }
+            throw error
+        }
+    }
 
-function exit(code: number) {
-    process.exitCode = code
-    setImmediate(() => {
-        process.exit(code)
+    async function exit() {
+        if (teardown) {
+            await teardown()
+        }
+        return 0
+    }
+
+    process.on('SIGTERM', () => {
+        if (cluster.isMaster) {
+            logger.info('got SIGTERM, exiting...')
+        }
+        exit()
+            .then((code) => {
+                logger.debug('bye')
+                process.exit(code)
+            })
+            .catch((error) => {
+                logger.fatal(error, 'unable to exit gracefully')
+                setTimeout(() => process.exit(1), 1000)
+            })
     })
 }
 
 if (module === require.main) {
     process.once('uncaughtException', (error) => {
         logger.error(error, 'Uncaught exception')
-        exit(1)
+        abort(1)
     })
     main().catch((error) => {
-        logger.fatal(error, 'Unable to start application')
-        exit(1)
+        if (cluster.isMaster) {
+            logger.fatal(error, 'Unable to start application')
+        }
+        abort(1)
+    })
+}
+
+function abort(code: number) {
+    process.exitCode = code
+    setImmediate(() => {
+        process.exit(code)
     })
 }

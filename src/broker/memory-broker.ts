@@ -1,27 +1,13 @@
 import type Logger from 'bunyan'
 import {Broker, DeliveryState, SendContext, SendOptions, Updater} from './broker'
-
+import {CancelError, TimeoutError} from './errors'
 import LRUCache from 'lru-cache'
 
 export interface MemoryBrokerOptions {
     /** Max age in milliseconds. */
-    max_age?: number
+    memory_max_age?: number
     /** Max size in bytes. */
-    max_size?: number
-}
-
-class TimeoutError extends Error {
-    code = 'E_TIMEOUT'
-    constructor(timeout: number) {
-        super(`Timed out after ${timeout}ms`)
-    }
-}
-
-class CancelError extends Error {
-    code = 'E_CANCEL'
-    constructor() {
-        super('Cancelled')
-    }
+    memory_max_size?: number
 }
 
 export class MemoryBroker implements Broker {
@@ -32,11 +18,17 @@ export class MemoryBroker implements Broker {
     constructor(options: MemoryBrokerOptions, private logger: Logger) {
         this.cache = new LRUCache({
             stale: true,
-            maxAge: (options.max_age || 60 * 60) * 1000,
-            max: (options.max_size || 500) * 1e6,
+            maxAge: (options.memory_max_age || 60 * 60) * 1000,
+            max: (options.memory_max_size || 500) * 1e6,
             length: (item) => item.byteLength,
         })
     }
+
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    async init() {}
+
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    async healthCheck() {}
 
     async subscribe(channel: string, updater: Updater) {
         this.logger.debug({channel}, 'new subscription')
