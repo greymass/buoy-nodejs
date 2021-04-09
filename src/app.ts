@@ -87,6 +87,8 @@ function getUUID(request: http.IncomingMessage) {
     return uuid
 }
 
+const connections: Connection[] = []
+
 async function handleConnection(socket: WebSocket, request: http.IncomingMessage) {
     const uuid = getUUID(request)
     let unsubscribe: Unsubscriber | null = null
@@ -98,7 +100,9 @@ async function handleConnection(socket: WebSocket, request: http.IncomingMessage
         } else {
             prematureClose = true
         }
+        connections.splice(connections.indexOf(connection), 1)
     })
+    connections.push(connection)
     const log = logger.child({uuid, conn: connection.id})
     log.debug('new connection')
     unsubscribe = await broker.subscribe(uuid, (data) => {
@@ -235,8 +239,8 @@ async function setup(port: number) {
         })
     })
 
-    return () =>
-        new Promise<void>((resolve, reject) => {
+    return async () => {
+        const close = new Promise<void>((resolve, reject) => {
             httpServer.close((error) => {
                 if (error) {
                     reject(error)
@@ -245,6 +249,9 @@ async function setup(port: number) {
                 }
             })
         })
+        connections.map((c) => c.close(1012, 'Shutting down'))
+        await close
+    }
 }
 
 export async function main() {
@@ -278,7 +285,6 @@ export async function main() {
             runningPromises.push(running)
         }
         await Promise.all(runningPromises)
-        logger.info({port}, 'server running')
     } else {
         try {
             teardown = await setup(port)
@@ -295,7 +301,12 @@ export async function main() {
 
     async function exit() {
         if (teardown) {
-            await teardown()
+            const timeout = new Promise<never>((_, reject) => {
+                setTimeout(() => {
+                    reject(new Error('Timed out waiting for teardown'))
+                }, 10 * 1000)
+            })
+            await Promise.race([teardown(), timeout])
         }
         return 0
     }
@@ -314,12 +325,18 @@ export async function main() {
                 setTimeout(() => process.exit(1), 1000)
             })
     })
+
+    if (cluster.isMaster) {
+        logger.info({port}, 'server running')
+    }
 }
 
 if (module === require.main) {
     process.once('uncaughtException', (error) => {
         logger.error(error, 'Uncaught exception')
-        abort(1)
+        if (cluster.isMaster) {
+            abort(1)
+        }
     })
     main().catch((error) => {
         if (cluster.isMaster) {
