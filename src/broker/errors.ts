@@ -9,7 +9,7 @@ export class TimeoutError extends Error {
 /** Thrown when a send is canceled. */
 export class CancelError extends Error {
     code = 'E_CANCEL'
-    constructor() {
-        super('Cancelled')
+    constructor(readonly reason: string = 'Cancelled') {
+        super(reason)
     }
 }

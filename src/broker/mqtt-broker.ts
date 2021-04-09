@@ -2,6 +2,7 @@ import type Logger from 'bunyan'
 import {connect, IClientPublishOptions, MqttClient} from 'mqtt'
 import {Broker, DeliveryState, SendContext, SendOptions, Updater} from './broker'
 import {CancelError, TimeoutError} from './errors'
+import {Hash, Hasher} from '../hasher'
 
 interface MqttBrokerOptions {
     /** MQTT server url. */
@@ -10,13 +11,20 @@ interface MqttBrokerOptions {
     mqtt_expiry?: number
 }
 
+interface Waiter {
+    channel: string
+    hash: Hash
+    cb: (error?: Error, hash?: Hash) => void
+}
+
 /** Passes messages and delivery notifications over MQTT. */
 export class MqttBroker implements Broker {
     private client: MqttClient
     private subscribers: Array<{channel: string; updater: Updater}> = []
-    private waiting: Map<string, (error?: Error) => void> = new Map()
+    private waiting: Array<Waiter> = []
     private expiry: number
     private ended: boolean
+    private hasher = new Hasher()
 
     constructor(private options: MqttBrokerOptions, private logger: Logger) {
         this.ended = false
@@ -52,11 +60,14 @@ export class MqttBroker implements Broker {
     async deinit() {
         this.logger.debug('mqtt broker deinit')
         this.ended = true
-        for (const [channel, fn] of this.waiting) {
-            this.logger.info('cancelling %s', channel)
-            this.sendCancel(channel)
-            fn(new CancelError())
+        const cancels: Promise<void>[] = []
+        for (const {hash, channel, cb} of this.waiting) {
+            this.logger.info({hash, channel}, 'cancelling waiter')
+            cancels.push(this.sendCancel(channel, hash))
+            cb(new CancelError('Shutting down'))
         }
+        this.waiting = []
+        await Promise.all(cancels)
         await new Promise<void>((resolve) => {
             this.client.end(false, {}, resolve)
         })
@@ -69,8 +80,12 @@ export class MqttBroker implements Broker {
     }
 
     async send(channel: string, payload: Buffer, options: SendOptions, ctx?: SendContext) {
+        const hash = this.hasher.hash(payload)
+        this.logger.debug({hash, channel}, 'send %s', hash)
         const cancel = () => {
-            this.sendCancel(channel)
+            this.sendCancel(channel, hash).catch((error) => {
+                this.logger.warn(error, 'error during send cancel')
+            })
         }
         if (ctx) {
             ctx.cancel = cancel
@@ -78,7 +93,7 @@ export class MqttBroker implements Broker {
         const timeout = (options.wait || 0) * 1000
         let deliveryPromise: Promise<void> | undefined
         if (timeout > 0) {
-            deliveryPromise = this.waitForDelivery(channel, timeout)
+            deliveryPromise = this.waitForDelivery(channel, timeout, hash)
         }
         await this.publish(`channel/${channel}`, payload, {
             qos: 2,
@@ -122,24 +137,47 @@ export class MqttBroker implements Broker {
         }
     }
 
-    private sendCancel(channel: string) {
+    private async sendCancel(channel: string, hash?: Hash) {
         // clear channel
-        this.client.publish(`channel/${channel}`, '', {qos: 1, retain: true})
+        const clear = new Promise<void>((resolve, reject) => {
+            this.client.publish(`channel/${channel}`, '', {qos: 1, retain: true}, (error) => {
+                if (error) {
+                    reject(error)
+                } else {
+                    resolve()
+                }
+            })
+        })
         // tell other pending sends that we cancelled
-        this.client.publish(`cancel/${channel}`, '', {qos: 1})
+        const tell = new Promise<void>((resolve, reject) => {
+            this.client.publish(`cancel/${channel}`, hash?.bytes || '', {qos: 1}, (error) => {
+                if (error) {
+                    reject(error)
+                } else {
+                    resolve()
+                }
+            })
+        })
+        await Promise.all([clear, tell])
     }
 
     private messageHandler(topic: string, payload: Buffer) {
         const parts = topic.split('/')
         switch (parts[0]) {
             case 'delivery':
-                this.handleDelivery(parts[1])
+                this.handleDelivery(
+                    parts[1],
+                    payload.byteLength > 0 ? new Hash(payload) : undefined
+                )
                 break
             case 'channel':
                 this.handleChannelMessage(parts[1], payload)
                 break
             case 'cancel':
-                this.handleCancel(parts[1])
+                this.handleCancel(parts[1], payload.byteLength > 0 ? new Hash(payload) : undefined)
+                break
+            case 'wait':
+                this.handleWait(parts[1], new Hash(payload))
                 break
             default:
                 this.logger.warn({topic}, 'unexpected message')
@@ -150,10 +188,11 @@ export class MqttBroker implements Broker {
         if (payload.length === 0) {
             return
         }
+        const hash = this.hasher.hash(payload)
         const updaters = this.subscribers
             .filter((sub) => sub.channel === channel)
             .map((sub) => sub.updater)
-        this.logger.debug({channel}, 'updating %d subscription(s)', updaters.length)
+        this.logger.debug({channel, hash}, 'updating %d subscription(s)', updaters.length)
         for (const updater of updaters) {
             updater(payload as Buffer)
         }
@@ -161,63 +200,83 @@ export class MqttBroker implements Broker {
             // clear retained message so it's not re-delivered
             this.client.publish(`channel/${channel}`, '', {qos: 1, retain: true})
             // tell waiting sends that we delivered
-            this.client.publish(`delivery/${channel}`, '', {qos: 1})
+            this.client.publish(`delivery/${channel}`, hash.bytes, {qos: 1})
         }
     }
 
-    private handleDelivery(channel: string) {
-        const fn = this.waiting.get(channel)
-        if (fn) {
-            fn()
+    private handleDelivery(channel: string, hash?: Hash) {
+        this.logger.debug({channel, hash}, 'delivery')
+        const waiters = this.waiting.filter((item) => item.channel === channel)
+        for (const waiter of waiters) {
+            waiter.cb(undefined, hash)
         }
     }
 
-    private handleCancel(channel: string) {
-        const fn = this.waiting.get(channel)
-        if (fn) {
-            fn(new CancelError())
-        }
-    }
-
-    private waitForDelivery(channel: string, timeout: number) {
-        return new Promise<void>((resolve, reject) => {
-            const cleanup = () => {
-                this.waiting.delete(channel)
-                this.client.unsubscribe(`delivery/${channel}`, (error: any) => {
-                    if (error) {
-                        this.logger.warn(error, 'error during delivery unsubscribe')
-                    }
-                })
-                this.client.unsubscribe(`cancel/${channel}`, (error: any) => {
-                    if (error) {
-                        this.logger.warn(error, 'error during delivery unsubscribe')
-                    }
-                })
+    private handleCancel(channel: string, hash?: Hash) {
+        this.logger.debug({channel, hash}, 'cancel')
+        const waiters = this.waiting.filter((item) => item.channel === channel)
+        for (const waiter of waiters) {
+            if (!hash || waiter.hash.equals(hash)) {
+                waiter.cb(new CancelError('Cancel from other sender'))
             }
-            this.client.subscribe(`delivery/${channel}`, {qos: 1}, (error) => {
+        }
+    }
+
+    private handleWait(channel: string, hash: Hash) {
+        this.logger.debug({channel, hash}, 'wait')
+        const waiters = this.waiting.filter((item) => item.channel === channel)
+        for (const waiter of waiters) {
+            if (!waiter.hash.equals(hash)) {
+                waiter.cb(new CancelError('Replaced by newer message'))
+            }
+        }
+    }
+
+    private waitForDelivery(channel: string, timeout: number, hash: Hash) {
+        return new Promise<void>((resolve, reject) => {
+            this.logger.debug({channel, hash}, 'wait for delivery')
+            const topics = [`delivery/${channel}`, `cancel/${channel}`, `wait/${channel}`]
+            const cleanup = () => {
+                clearTimeout(timer)
+                this.waiting.splice(this.waiting.indexOf(waiter), 1)
+                const lastWaiter = this.waiting.findIndex((item) => item.channel === channel) === -1
+                this.logger.debug({channel, hash, lastWaiter}, 'delivery wait cleanup')
+                if (lastWaiter) {
+                    this.client.unsubscribe(topics, (error: any) => {
+                        if (error) {
+                            this.logger.warn(error, 'error during unsubscribe')
+                        }
+                    })
+                }
+            }
+            this.client.subscribe(topics, {qos: 1}, (error) => {
                 if (error) {
                     cleanup()
                     reject(error)
                 }
             })
-            this.client.subscribe(`cancel/${channel}`, {qos: 1}, (error) => {
-                if (error) {
-                    cleanup()
-                    reject(error)
-                }
-            })
-            setTimeout(() => {
+            this.client.publish(`wait/${channel}`, hash.bytes, {qos: 1})
+            const timer = setTimeout(() => {
                 cleanup()
                 reject(new TimeoutError(timeout))
             }, timeout)
-            this.waiting.set(channel, (error?: Error) => {
-                cleanup()
-                if (error) {
-                    reject(error)
-                } else {
-                    resolve()
-                }
-            })
+            const waiter: Waiter = {
+                channel,
+                hash,
+                cb: (error?: Error, result?: Hash) => {
+                    cleanup()
+                    if (error) {
+                        reject(error)
+                    } else {
+                        if (result && !result.equals(hash)) {
+                            reject(new CancelError('Replaced by other delivery'))
+                        } else {
+                            resolve()
+                        }
+                    }
+                },
+            }
+            this.waiting.push(waiter)
         })
     }
 

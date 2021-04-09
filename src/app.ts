@@ -8,9 +8,10 @@ import {URL} from 'url'
 import logger from './logger'
 import version from './version'
 import setupBroker, {Broker, SendContext, Unsubscriber} from './broker'
+import type Logger from 'bunyan'
 
 let broker: Broker
-
+let requestSeq = 0
 const connections: Connection[] = []
 
 const HEARTBEAT_INTERVAL = 10 * 1000
@@ -120,15 +121,20 @@ class HttpError extends Error {
     }
 }
 
-async function handlePost(request: http.IncomingMessage, response: http.ServerResponse) {
+async function handlePost(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    log: Logger
+) {
     const uuid = getUUID(request)
-    const log = logger.child({uuid})
+    log = log.child({uuid})
     const data = await readBody(request)
     if (data.byteLength === 0) {
         throw new HttpError('Unable to forward empty message', 400)
     }
     const ctx: SendContext = {}
     request.once('close', () => {
+        response.end()
         if (ctx.cancel) {
             ctx.cancel()
         }
@@ -148,7 +154,7 @@ async function handlePost(request: http.IncomingMessage, response: http.ServerRe
         log.info({delivery}, 'message dispatched')
     } catch (error) {
         if (error.code === 'E_CANCEL') {
-            throw new HttpError('Request cancelled', 410)
+            throw new HttpError(`Request cancelled (${error.reason})`, 410)
         } else if (error.code === 'E_TIMEOUT') {
             throw new HttpError('Timed out waiting for connection', 408)
         } else {
@@ -203,19 +209,24 @@ function handleRequest(request: http.IncomingMessage, response: http.ServerRespo
             })
         return
     }
-    handlePost(request, response)
+    const log = logger.child({req: ++requestSeq})
+    handlePost(request, response, log)
         .then(() => {
             response.statusCode = 200
             response.write('Ok')
             response.end()
         })
         .catch((error) => {
+            if (response.writableEnded) {
+                log.debug(error, 'error from ended request')
+                return
+            }
             if (error instanceof HttpError) {
-                logger.info(error, 'error handling post request')
+                log.info('http %d when handling post request: %s', error.statusCode, error.message)
                 response.statusCode = error.statusCode
                 response.write(error.message)
             } else {
-                logger.error(error, 'unexpected error handling post request')
+                log.error(error, 'unexpected error handling post request')
                 response.statusCode = 500
                 response.write('Internal server error')
             }
