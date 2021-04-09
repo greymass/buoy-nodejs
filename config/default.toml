@@ -9,6 +9,9 @@ port = 8090
 # how many worker processes to spawn (0 = autodetect)
 num_workers = 1
 
+# how often to log status messages, set to 0 to disable
+status_interval = 60 # seconds
+
 # broker options
 [broker]
 type = 'memory'

@@ -12,6 +12,7 @@ import type Logger from 'bunyan'
 
 let broker: Broker
 let requestSeq = 0
+let activeRequests = 0
 const connections: Connection[] = []
 
 const HEARTBEAT_INTERVAL = 10 * 1000
@@ -209,6 +210,7 @@ function handleRequest(request: http.IncomingMessage, response: http.ServerRespo
             })
         return
     }
+    activeRequests++
     const log = logger.child({req: ++requestSeq})
     handlePost(request, response, log)
         .then(() => {
@@ -231,6 +233,9 @@ function handleRequest(request: http.IncomingMessage, response: http.ServerRespo
                 response.write('Internal server error')
             }
             response.end()
+        })
+        .finally(() => {
+            activeRequests--
         })
 }
 
@@ -265,6 +270,13 @@ async function setup(port: number) {
     }
 }
 
+interface Status {
+    activeConnections: number
+    activeRequests: number
+    numConnections: number
+    numRequests: number
+}
+
 export async function main() {
     const port = Number.parseInt(config.get('port'))
     if (!Number.isFinite(port)) {
@@ -279,7 +291,10 @@ export async function main() {
     }
     const isMaster = cluster.isMaster && numWorkers > 1
     let teardown: () => Promise<void> | undefined
+    let statusTimer: any
+    const statusInterval = (Number(config.get('status_interval')) || 0) * 1000
     if (isMaster) {
+        const workers: cluster.Worker[] = []
         logger.info('spawning %d workers', numWorkers)
         const runningPromises: Promise<void>[] = []
         for (let i = 0; i < numWorkers; i++) {
@@ -294,8 +309,34 @@ export async function main() {
                 })
             })
             runningPromises.push(running)
+            workers.push(worker)
         }
         await Promise.all(runningPromises)
+        if (statusInterval > 0) {
+            const workerStatus: Record<number, Status> = {}
+            workers.forEach((worker) => {
+                worker.on('message', (message) => {
+                    if (message.status) {
+                        workerStatus[worker.id] = message.status
+                    }
+                })
+            })
+            statusTimer = setInterval(() => {
+                const status: Status = {
+                    activeConnections: 0,
+                    activeRequests: 0,
+                    numConnections: 0,
+                    numRequests: 0,
+                }
+                for (const s of Object.values(workerStatus)) {
+                    status.activeConnections += s.activeConnections
+                    status.activeRequests += s.activeRequests
+                    status.numConnections += s.numConnections
+                    status.numRequests += s.numRequests
+                }
+                logger.info(status, 'status')
+            }, statusInterval)
+        }
     } else {
         try {
             teardown = await setup(port)
@@ -308,9 +349,25 @@ export async function main() {
             }
             throw error
         }
+        if (statusInterval > 0) {
+            statusTimer = setInterval(() => {
+                const status: Status = {
+                    activeConnections: connections.length,
+                    activeRequests,
+                    numConnections: Connection.seq,
+                    numRequests: requestSeq,
+                }
+                if (process.send) {
+                    process.send({status})
+                } else {
+                    logger.info(status, 'status')
+                }
+            }, statusInterval)
+        }
     }
 
     async function exit() {
+        clearInterval(statusTimer)
         if (teardown) {
             const timeout = new Promise<never>((_, reject) => {
                 setTimeout(() => {
