@@ -160,7 +160,7 @@ function readBody(request: http.IncomingMessage) {
 function handleRequest(request: http.IncomingMessage, response: http.ServerResponse) {
     response.setHeader('Server', `buoy/${version}`)
     response.setHeader('Access-Control-Allow-Origin', '*')
-    response.setHeader('Access-Control-Allow-Headers', 'X-Buoy-Wait')
+    response.setHeader('Access-Control-Allow-Headers', '*')
     response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
     response.setHeader('Access-Control-Expose-Headers', 'X-Buoy-Delivery')
     if (request.method !== 'POST') {
