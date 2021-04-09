@@ -90,20 +90,20 @@ function getUUID(request: http.IncomingMessage) {
 async function handleConnection(socket: WebSocket, request: http.IncomingMessage) {
     const uuid = getUUID(request)
     const connection = new Connection(socket, () => {
-        log.info('connection closed')
+        log.debug('connection closed')
         unsubscribe()
     })
     const log = logger.child({uuid, conn: connection.id})
+    log.debug('new connection')
     const unsubscribe = await broker.subscribe(uuid, (data) => {
+        log.info('delivering payload')
         connection.send(data)
     })
 }
 
 class HttpError extends Error {
-    statusCode: number
-    constructor(message: string, statusCode: number) {
+    constructor(message: string, readonly statusCode: number) {
         super(message)
-        this.statusCode = statusCode
     }
 }
 
