@@ -5,8 +5,10 @@ WORKDIR /app
 # install build dependencies
 RUN apk add --no-cache \
     bash \
+    build-base \
     git \
-    make
+    make \
+    python
 
 # install application dependencies
 COPY package.json yarn.lock ./
