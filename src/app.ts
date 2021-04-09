@@ -7,7 +7,7 @@ import {URL} from 'url'
 
 import logger from './logger'
 import version from './version'
-import setupBroker, {Broker, SendContext} from './broker'
+import setupBroker, {Broker, SendContext, Unsubscriber} from './broker'
 
 let broker: Broker
 
@@ -89,16 +89,25 @@ function getUUID(request: http.IncomingMessage) {
 
 async function handleConnection(socket: WebSocket, request: http.IncomingMessage) {
     const uuid = getUUID(request)
+    let unsubscribe: Unsubscriber | null = null
+    let prematureClose = false
     const connection = new Connection(socket, () => {
         log.debug('connection closed')
-        unsubscribe()
+        if (unsubscribe) {
+            unsubscribe()
+        } else {
+            prematureClose = true
+        }
     })
     const log = logger.child({uuid, conn: connection.id})
     log.debug('new connection')
-    const unsubscribe = await broker.subscribe(uuid, (data) => {
+    unsubscribe = await broker.subscribe(uuid, (data) => {
         log.info('delivering payload')
         connection.send(data)
     })
+    if (prematureClose) {
+        unsubscribe()
+    }
 }
 
 class HttpError extends Error {
