@@ -16,13 +16,17 @@ export class MqttBroker implements Broker {
     private subscribers: Array<{channel: string; updater: Updater}> = []
     private waiting: Map<string, (error?: Error) => void> = new Map()
     private expiry: number
+    private ended: boolean
 
     constructor(private options: MqttBrokerOptions, private logger: Logger) {
+        this.ended = false
         this.expiry = options.mqtt_expiry || 60 * 30
         this.client = connect(options.mqtt_url)
         this.client.on('message', this.messageHandler.bind(this))
         this.client.on('close', () => {
-            this.logger.warn('disconnected from server')
+            if (!this.ended) {
+                this.logger.warn('disconnected from server')
+            }
         })
         this.client.on('connect', () => {
             this.logger.info('connected')
@@ -45,6 +49,19 @@ export class MqttBroker implements Broker {
         }
     }
 
+    async deinit() {
+        this.logger.debug('mqtt broker deinit')
+        this.ended = true
+        for (const [channel, fn] of this.waiting) {
+            this.logger.info('cancelling %s', channel)
+            this.sendCancel(channel)
+            fn(new CancelError())
+        }
+        await new Promise<void>((resolve) => {
+            this.client.end(false, {}, resolve)
+        })
+    }
+
     async healthCheck() {
         if (!this.client.connected) {
             throw new Error('Lost connection to MQTT server')
@@ -53,10 +70,7 @@ export class MqttBroker implements Broker {
 
     async send(channel: string, payload: Buffer, options: SendOptions, ctx?: SendContext) {
         const cancel = () => {
-            // clear channel
-            this.client.publish(`channel/${channel}`, '', {qos: 1, retain: true})
-            // tell other pending sends that we cancelled
-            this.client.publish(`cancel/${channel}`, '', {qos: 1})
+            this.sendCancel(channel)
         }
         if (ctx) {
             ctx.cancel = cancel
@@ -106,6 +120,13 @@ export class MqttBroker implements Broker {
             this.logger.debug({channel}, 'unsubscribe')
             this.removeSubscriber(sub)
         }
+    }
+
+    private sendCancel(channel: string) {
+        // clear channel
+        this.client.publish(`channel/${channel}`, '', {qos: 1, retain: true})
+        // tell other pending sends that we cancelled
+        this.client.publish(`cancel/${channel}`, '', {qos: 1})
     }
 
     private messageHandler(topic: string, payload: Buffer) {

@@ -28,6 +28,9 @@ export class MemoryBroker implements Broker {
     async init() {}
 
     // eslint-disable-next-line @typescript-eslint/no-empty-function
+    async deinit() {}
+
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
     async healthCheck() {}
 
     async subscribe(channel: string, updater: Updater) {

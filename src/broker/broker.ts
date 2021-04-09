@@ -38,6 +38,8 @@ export interface Broker {
     subscribe(channel: string, updater: Updater): Promise<Unsubscriber>
     /** Called during setup, can be used to initialize broker. */
     init(): Promise<void>
+    /** Called during teardown, can be used to cleanup and connections. */
+    deinit(): Promise<void>
     /** Perform a health check on the broker, should throw if there is a problem. */
     healthCheck(): Promise<void>
 }

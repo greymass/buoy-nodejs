@@ -11,6 +11,8 @@ import setupBroker, {Broker, SendContext, Unsubscriber} from './broker'
 
 let broker: Broker
 
+const connections: Connection[] = []
+
 const HEARTBEAT_INTERVAL = 10 * 1000
 
 /** A WebSocket connection. */
@@ -86,8 +88,6 @@ function getUUID(request: http.IncomingMessage) {
     }
     return uuid
 }
-
-const connections: Connection[] = []
 
 async function handleConnection(socket: WebSocket, request: http.IncomingMessage) {
     const uuid = getUUID(request)
@@ -250,7 +250,7 @@ async function setup(port: number) {
             })
         })
         connections.map((c) => c.close(1012, 'Shutting down'))
-        await close
+        await Promise.all([close, broker.deinit()])
     }
 }
 
