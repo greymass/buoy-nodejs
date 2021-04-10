@@ -94,6 +94,9 @@ export class MqttBroker implements Broker {
         let deliveryPromise: Promise<void> | undefined
         if (timeout > 0) {
             deliveryPromise = this.waitForDelivery(channel, timeout, hash)
+            // this shuts node up about "rejection was handled asynchronously"
+            // we will handle the error, just not right away
+            deliveryPromise.catch(() => {}) // eslint-disable-line @typescript-eslint/no-empty-function
         }
         await this.publish(`channel/${channel}`, payload, {
             qos: 2,
