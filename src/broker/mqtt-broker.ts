@@ -68,8 +68,14 @@ export class MqttBroker implements Broker {
         }
         this.waiting = []
         await Promise.all(cancels)
-        await new Promise<void>((resolve) => {
-            this.client.end(false, {}, resolve)
+        await new Promise<void>((resolve, reject) => {
+            this.client.end(false, {}, (error) => {
+                if (error) {
+                    reject(error)
+                } else {
+                    resolve()
+                }
+            })
         })
     }
 

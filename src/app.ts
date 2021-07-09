@@ -1,5 +1,5 @@
 import config from 'config'
-import * as cluster from 'cluster'
+import cluster, {Worker} from 'cluster'
 import * as http from 'http'
 import * as os from 'os'
 import * as WebSocket from 'ws'
@@ -294,7 +294,7 @@ export async function main() {
     let statusTimer: any
     const statusInterval = (Number(config.get('status_interval')) || 0) * 1000
     if (isMaster) {
-        const workers: cluster.Worker[] = []
+        const workers: Worker[] = []
         logger.info('spawning %d workers', numWorkers)
         const runningPromises: Promise<void>[] = []
         for (let i = 0; i < numWorkers; i++) {

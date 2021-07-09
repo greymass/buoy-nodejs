@@ -1,4 +1,4 @@
-FROM node:14-alpine as build-stage
+FROM node:16-alpine as build-stage
 
 WORKDIR /app
 
@@ -24,7 +24,7 @@ RUN make lib
 RUN yarn install --non-interactive --frozen-lockfile --production
 
 # copy built application to runtime image
-FROM node:14-alpine
+FROM node:16-alpine
 WORKDIR /app
 COPY --from=build-stage /app/config config
 COPY --from=build-stage /app/lib lib

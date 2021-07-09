@@ -1,5 +1,5 @@
 import * as bunyan from 'bunyan'
-import * as cluster from 'cluster'
+import cluster from 'cluster'
 import config from 'config'
 
 let logger = bunyan.createLogger({
@@ -16,7 +16,7 @@ let logger = bunyan.createLogger({
 })
 
 if (cluster.isWorker) {
-    logger = logger.child({worker: cluster.worker.id})
+    logger = logger.child({worker: cluster.worker!.id})
 }
 
 export default logger

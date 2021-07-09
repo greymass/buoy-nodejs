@@ -1,5 +1,5 @@
 import config from 'config'
-import * as cluster from 'cluster'
+import cluster from 'cluster'
 
 import baseLogger from '../logger'
 import {Broker} from './broker'
