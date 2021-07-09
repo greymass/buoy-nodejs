@@ -8,7 +8,7 @@ RUN apk add --no-cache \
     build-base \
     git \
     make \
-    python
+    python3
 
 # install application dependencies
 COPY package.json yarn.lock ./
