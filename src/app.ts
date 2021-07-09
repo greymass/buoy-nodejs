@@ -282,18 +282,18 @@ export async function main() {
     if (!Number.isFinite(port)) {
         throw new Error('Invalid port number')
     }
-    if (cluster.isMaster) {
+    if (cluster.isPrimary) {
         logger.info({version}, 'starting')
     }
     let numWorkers = Number.parseInt(config.get('num_workers'), 10)
     if (numWorkers === 0) {
         numWorkers = os.cpus().length
     }
-    const isMaster = cluster.isMaster && numWorkers > 1
+    const isPrimary = cluster.isPrimary && numWorkers > 1
     let teardown: () => Promise<void> | undefined
     let statusTimer: any
     const statusInterval = (Number(config.get('status_interval')) || 0) * 1000
-    if (isMaster) {
+    if (isPrimary) {
         const workers: Worker[] = []
         logger.info('spawning %d workers', numWorkers)
         const runningPromises: Promise<void>[] = []
@@ -380,7 +380,7 @@ export async function main() {
     }
 
     process.on('SIGTERM', () => {
-        if (cluster.isMaster) {
+        if (cluster.isPrimary) {
             logger.info('got SIGTERM, exiting...')
         }
         exit()
@@ -394,7 +394,7 @@ export async function main() {
             })
     })
 
-    if (cluster.isMaster) {
+    if (cluster.isPrimary) {
         logger.info({port}, 'server running')
     }
 }
@@ -402,12 +402,12 @@ export async function main() {
 if (module === require.main) {
     process.once('uncaughtException', (error) => {
         logger.error(error, 'Uncaught exception')
-        if (cluster.isMaster) {
+        if (cluster.isPrimary) {
             abort(1)
         }
     })
     main().catch((error) => {
-        if (cluster.isMaster) {
+        if (cluster.isPrimary) {
             logger.fatal(error, 'Unable to start application')
         }
         abort(1)

@@ -16,7 +16,7 @@ async function setupBroker() {
 
     switch (brokerConf.type) {
         case 'memory':
-            if (!cluster.isMaster) {
+            if (!cluster.isPrimary) {
                 throw new Error('Memory broker cannot be used with more than one worker')
             }
             broker = new MemoryBroker(brokerConf, logger)
