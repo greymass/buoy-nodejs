@@ -1,8 +1,8 @@
-/** Thrown when a send timeout occurs. */
-export class TimeoutError extends Error {
-    code = 'E_TIMEOUT'
-    constructor(timeout: number) {
-        super(`Timed out after ${timeout}ms`)
+/** Thrown when a delivery error or timeout occurs. */
+export class DeliveryError extends Error {
+    code = 'E_DELIVERY'
+    constructor(readonly reason: string) {
+        super(reason)
     }
 }
 

@@ -1,7 +1,7 @@
 import type Logger from 'bunyan'
 import {connect, IClientPublishOptions, MqttClient} from 'mqtt'
 import {Broker, DeliveryState, SendContext, SendOptions, Updater} from './broker'
-import {CancelError, TimeoutError} from './errors'
+import {CancelError, DeliveryError} from './errors'
 import {Hash, Hasher} from '../hasher'
 
 interface MqttBrokerOptions {
@@ -120,7 +120,7 @@ export class MqttBroker implements Broker {
                 if (ctx) {
                     ctx.cancel = undefined
                 }
-                if (error instanceof TimeoutError) {
+                if (error instanceof DeliveryError) {
                     if (options.requireDelivery) {
                         cancel()
                         throw error
@@ -202,15 +202,19 @@ export class MqttBroker implements Broker {
             .filter((sub) => sub.channel === channel)
             .map((sub) => sub.updater)
         this.logger.debug({channel, hash}, 'updating %d subscription(s)', updaters.length)
-        for (const updater of updaters) {
-            updater(payload as Buffer)
-        }
-        if (updaters.length > 0) {
-            // clear retained message so it's not re-delivered
-            this.client.publish(`channel/${channel}`, '', {qos: 1, retain: true})
-            // tell waiting sends that we delivered
-            this.client.publish(`delivery/${channel}`, hash.bytes, {qos: 1})
-        }
+        Promise.allSettled(updaters.map((fn) => fn(payload)))
+            .then((results) => results.some((result) => result.status === 'fulfilled'))
+            .then((delivered) => {
+                if (delivered) {
+                    // clear retained message so it's not re-delivered
+                    this.client.publish(`channel/${channel}`, '', {qos: 1, retain: true})
+                    // tell waiting sends that we delivered
+                    this.client.publish(`delivery/${channel}`, hash.bytes, {qos: 1})
+                }
+            })
+            .catch((error) => {
+                this.logger.error(error, 'unexpected error during subscriber delivery')
+            })
     }
 
     private handleDelivery(channel: string, hash?: Hash) {
@@ -267,7 +271,7 @@ export class MqttBroker implements Broker {
             this.client.publish(`wait/${channel}`, hash.bytes, {qos: 1})
             const timer = setTimeout(() => {
                 cleanup()
-                reject(new TimeoutError(timeout))
+                reject(new DeliveryError(`Timed out after ${timeout}ms`))
             }, timeout)
             const waiter: Waiter = {
                 channel,

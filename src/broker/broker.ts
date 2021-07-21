@@ -23,8 +23,12 @@ export interface SendContext {
 /** Can be called to cancel a subscription. */
 export type Unsubscriber = () => void
 
-/** Function that is called when a subscription updates. */
-export type Updater = (payload: Buffer) => void
+/**
+ * Function that is called when a subscription updates.
+ * Should return a promise that resolves when the subscription has been updated.
+ * May throw to indicate that the update failed.
+ */
+export type Updater = (payload: Buffer) => Promise<void>
 
 export interface Broker {
     /** Send payload to channel and optionally wait for delivery.  */

@@ -35,3 +35,4 @@ async function setupBroker() {
 
 export default setupBroker
 export * from './broker'
+export * from './errors'

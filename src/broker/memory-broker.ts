@@ -1,6 +1,6 @@
 import type Logger from 'bunyan'
 import {Broker, DeliveryState, SendContext, SendOptions, Updater} from './broker'
-import {CancelError, TimeoutError} from './errors'
+import {CancelError, DeliveryError} from './errors'
 import LRUCache from 'lru-cache'
 
 export interface MemoryBrokerOptions {
@@ -68,12 +68,17 @@ export class MemoryBroker implements Broker {
                 throw new CancelError()
             }
             this.logger.debug({channel}, 'direct delivery to %d subscriber(s)', updaters.length)
-            for (const updater of updaters) {
-                updater(payload)
+            const results = await Promise.allSettled(updaters.map((fn) => fn(payload)))
+            const delivery = results.some((result) => result.status === 'fulfilled')
+            if (!delivery) {
+                const result = results.find(
+                    ({status}) => status === 'rejected'
+                ) as PromiseRejectedResult
+                throw new DeliveryError(result?.reason?.message || 'Unknown')
             }
             return DeliveryState.delivered
         } catch (error) {
-            if (error instanceof TimeoutError && !options.requireDelivery) {
+            if (error instanceof DeliveryError && !options.requireDelivery) {
                 if (cancelled) {
                     throw new CancelError()
                 }
@@ -96,7 +101,7 @@ export class MemoryBroker implements Broker {
             } else {
                 setTimeout(() => {
                     this.waiting.delete(channel)
-                    reject(new TimeoutError(timeout))
+                    reject(new DeliveryError(`Timed out after ${timeout}ms`))
                 }, timeout)
                 this.waiting.set(channel, (updater) => {
                     this.waiting.delete(channel)

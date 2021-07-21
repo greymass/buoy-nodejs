@@ -7,7 +7,7 @@ import config from 'config'
 import type Logger from 'bunyan'
 
 import logger from './logger'
-import setupBroker, {Broker, SendContext, Unsubscriber} from './broker'
+import setupBroker, {Broker, CancelError, DeliveryError, SendContext, Unsubscriber} from './broker'
 import version from './version'
 
 let broker: Broker
@@ -30,6 +30,21 @@ class Connection {
     private timer: NodeJS.Timeout
     private log: typeof logger
 
+    /**
+     * Simple ACK protocol, like STOMP but simpler and using binary frames instead of text.
+     *
+     * Format: 0x4242<type>[payload]
+     *
+     * Clients can enable protocol by sending the message 0x424200, once that message
+     * is received the server will add a 0x4242<type> header to all messages sent.
+     *
+     * When a message is delivered with 0x424201<seq><payload> the client send back a
+     * 0x424202<seq> to acknowledge receiving the message.
+     */
+    private ackEnabled = false
+    private ackSeq = 0
+    private ackWaiting: {[seq: number]: () => void} = {}
+
     constructor(socket: WebSocket, cleanup: () => void) {
         this.id = ++Connection.seq
         this.log = logger.child({conn: this.id})
@@ -39,6 +54,10 @@ class Connection {
         this.cleanupCallback = cleanup
         this.socket.on('close', () => {
             this.didClose()
+        })
+        this.socket.on('message', (data) => {
+            if (!(data instanceof Buffer)) return
+            this.handleMessage(data)
         })
         this.socket.on('pong', () => {
             this.alive = true
@@ -65,10 +84,13 @@ class Connection {
         }
         this.closed = true
     }
-
-    send(data: Buffer) {
-        this.log.debug({size: data.byteLength}, 'send data')
-        this.socket.send(data)
+    async send(data: Buffer) {
+        if (this.ackEnabled) {
+            await this.ackSend(data)
+        } else {
+            this.log.debug({size: data.byteLength}, 'send data')
+            this.socket.send(data)
+        }
     }
 
     close(code?: number, reason?: string) {
@@ -79,6 +101,51 @@ class Connection {
     destroy() {
         this.socket.terminate()
         this.didClose()
+    }
+
+    private handleMessage(data: Buffer) {
+        if (data[0] !== 0x42 || data[1] !== 0x42) return
+        const type = data[2]
+        this.log.debug({type}, 'command message')
+        switch (type) {
+            case 0x00:
+                this.ackEnabled = true
+                break
+            case 0x01:
+                break
+            case 0x02: {
+                const seq = data[3]
+                const callback = this.ackWaiting[seq]
+                if (callback) {
+                    callback()
+                }
+                break
+            }
+        }
+    }
+
+    private async ackSend(data: Buffer) {
+        const seq = ++this.ackSeq % 255
+        this.log.debug({size: data.byteLength, seq}, 'ack send data')
+        const header = Buffer.from([0x42, 0x42, 0x01, seq])
+        data = Buffer.concat([header, data])
+        this.socket.send(data)
+        return await this.waitForAck(seq)
+    }
+
+    private waitForAck(seq: number, timeout = 2000) {
+        return new Promise<boolean>((resolve) => {
+            const timer = setTimeout(() => {
+                delete this.ackWaiting[seq]
+                resolve(false)
+            }, timeout)
+            this.ackWaiting[seq] = () => {
+                this.log.debug({seq}, 'got ack')
+                clearTimeout(timer)
+                delete this.ackWaiting[seq]
+                resolve(true)
+            }
+        })
     }
 }
 
@@ -107,9 +174,10 @@ async function handleConnection(socket: WebSocket, request: http.IncomingMessage
     connections.push(connection)
     const log = logger.child({uuid, conn: connection.id})
     log.debug('new connection')
-    unsubscribe = await broker.subscribe(uuid, (data) => {
-        log.info('delivering payload')
-        connection.send(data)
+    unsubscribe = await broker.subscribe(uuid, async (data) => {
+        log.debug('delivering payload')
+        await connection.send(data)
+        log.info('payload delivered')
     })
     if (prematureClose) {
         unsubscribe()
@@ -154,12 +222,10 @@ async function handlePost(
         response.setHeader('X-Buoy-Delivery', delivery)
         log.info({delivery}, 'message dispatched')
     } catch (error) {
-        if (error.code === 'E_CANCEL') {
+        if (error instanceof CancelError) {
             throw new HttpError(`Request cancelled (${error.reason})`, 410)
-        } else if (error.code === 'E_TIMEOUT') {
-            throw new HttpError('Timed out waiting for connection', 408)
-        } else {
-            throw error
+        } else if (error instanceof DeliveryError) {
+            throw new HttpError(`Unable to deliver message (${error.reason})`, 408)
         }
     }
 }
