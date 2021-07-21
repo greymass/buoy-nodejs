@@ -1,14 +1,14 @@
-import config from 'config'
-import cluster, {Worker} from 'cluster'
+import {URL} from 'url'
 import * as http from 'http'
 import * as os from 'os'
 import * as WebSocket from 'ws'
-import {URL} from 'url'
+import cluster, {Worker} from 'cluster'
+import config from 'config'
+import type Logger from 'bunyan'
 
 import logger from './logger'
-import version from './version'
 import setupBroker, {Broker, SendContext, Unsubscriber} from './broker'
-import type Logger from 'bunyan'
+import version from './version'
 
 let broker: Broker
 let requestSeq = 0
