@@ -24,6 +24,7 @@ class Connection {
     alive: boolean
     closed: boolean
     id: number
+    version: number
 
     private cleanupCallback: () => void
     private socket: WebSocket
@@ -41,17 +42,17 @@ class Connection {
      * When a message is delivered with 0x424201<seq><payload> the client send back a
      * 0x424202<seq> to acknowledge receiving the message.
      */
-    private ackEnabled = false
     private ackSeq = 0
     private ackWaiting: {[seq: number]: () => void} = {}
 
-    constructor(socket: WebSocket, cleanup: () => void) {
+    constructor(socket: WebSocket, version: number, cleanup: () => void) {
         this.id = ++Connection.seq
         this.log = logger.child({conn: this.id})
         this.socket = socket
         this.closed = false
         this.alive = true
         this.cleanupCallback = cleanup
+        this.version = version
         this.socket.on('close', () => {
             this.didClose()
         })
@@ -84,8 +85,9 @@ class Connection {
         }
         this.closed = true
     }
+
     async send(data: Buffer) {
-        if (this.ackEnabled) {
+        if (this.version === 2) {
             await this.ackSend(data)
         } else {
             this.log.debug({size: data.byteLength}, 'send data')
@@ -108,11 +110,6 @@ class Connection {
         const type = data[2]
         this.log.debug({type}, 'command message')
         switch (type) {
-            case 0x00:
-                this.ackEnabled = true
-                break
-            case 0x01:
-                break
             case 0x02: {
                 const seq = data[3]
                 const callback = this.ackWaiting[seq]
@@ -134,16 +131,16 @@ class Connection {
     }
 
     private waitForAck(seq: number, timeout = 2000) {
-        return new Promise<boolean>((resolve) => {
+        return new Promise<void>((resolve, reject) => {
             const timer = setTimeout(() => {
                 delete this.ackWaiting[seq]
-                resolve(false)
+                reject(new Error('Timed out waiting for ACK'))
             }, timeout)
             this.ackWaiting[seq] = () => {
                 this.log.debug({seq}, 'got ack')
                 clearTimeout(timer)
                 delete this.ackWaiting[seq]
-                resolve(true)
+                resolve()
             }
         })
     }
@@ -160,9 +157,14 @@ function getUUID(request: http.IncomingMessage) {
 
 async function handleConnection(socket: WebSocket, request: http.IncomingMessage) {
     const uuid = getUUID(request)
+    let version = 1
+    if (request.url) {
+        const query = new URL(request.url, 'http://localhost').searchParams
+        version = Number.parseInt(query.get('v') || '') || 1
+    }
     let unsubscribe: Unsubscriber | null = null
     let prematureClose = false
-    const connection = new Connection(socket, () => {
+    const connection = new Connection(socket, version, () => {
         log.debug('connection closed')
         if (unsubscribe) {
             unsubscribe()
