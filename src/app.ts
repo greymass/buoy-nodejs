@@ -178,7 +178,12 @@ async function handleConnection(socket: WebSocket, request: http.IncomingMessage
     log.debug('new connection')
     unsubscribe = await broker.subscribe(uuid, async (data) => {
         log.debug('delivering payload')
-        await connection.send(data)
+        try {
+            await connection.send(data)
+        } catch (error) {
+            log.info(error, 'failed to deliver payload')
+            throw error
+        }
         log.info('payload delivered')
     })
     if (prematureClose) {
