@@ -7,7 +7,14 @@ import config from 'config'
 import type Logger from 'bunyan'
 
 import logger from './logger'
-import setupBroker, {Broker, CancelError, DeliveryError, SendContext, Unsubscriber} from './broker'
+import setupBroker, {
+    Broker,
+    CancelError,
+    DeliveryError,
+    DeliveryState,
+    SendContext,
+    Unsubscriber,
+} from './broker'
 import version from './version'
 
 let broker: Broker
@@ -36,8 +43,7 @@ class Connection {
      *
      * Format: 0x4242<type>[payload]
      *
-     * Clients can enable protocol by sending the message 0x424200, once that message
-     * is received the server will add a 0x4242<type> header to all messages sent.
+     * For version 2 clients the server will add a 0x4242<type> header to all messages sent.
      *
      * When a message is delivered with 0x424201<seq><payload> the client send back a
      * 0x424202<seq> to acknowledge receiving the message.
@@ -87,6 +93,9 @@ class Connection {
     }
 
     async send(data: Buffer) {
+        if (this.closed) {
+            throw new Error('Socket closed')
+        }
         if (this.version === 2) {
             await this.ackSend(data)
         } else {
@@ -130,11 +139,12 @@ class Connection {
         return await this.waitForAck(seq)
     }
 
-    private waitForAck(seq: number, timeout = 2000) {
+    private waitForAck(seq: number, timeout = 5000) {
         return new Promise<void>((resolve, reject) => {
             const timer = setTimeout(() => {
                 delete this.ackWaiting[seq]
                 reject(new Error('Timed out waiting for ACK'))
+                this.destroy()
             }, timeout)
             this.ackWaiting[seq] = () => {
                 this.log.debug({seq}, 'got ack')
