@@ -223,6 +223,9 @@ async function handlePost(
         const delivery = await broker.send(uuid, data, {wait, requireDelivery}, ctx)
         response.setHeader('X-Buoy-Delivery', delivery)
         log.info({delivery}, 'message dispatched')
+        if (wait > 0 && delivery == DeliveryState.buffered) {
+            return 202
+        }
     } catch (error) {
         if (error instanceof CancelError) {
             throw new HttpError(`Request cancelled (${error.reason})`, 410)
@@ -281,8 +284,8 @@ function handleRequest(request: http.IncomingMessage, response: http.ServerRespo
     activeRequests++
     const log = logger.child({req: ++requestSeq})
     handlePost(request, response, log)
-        .then(() => {
-            response.statusCode = 200
+        .then((status) => {
+            response.statusCode = status || 200
             response.write('Ok')
             response.end()
         })
