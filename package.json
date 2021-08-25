@@ -11,7 +11,7 @@
     "lru-cache": "^6.0.0",
     "mqtt": "^4.2.6",
     "toml": "2.x",
-    "ws": "^7.4.6",
+    "ws": "^8.0.0",
     "xxhash-addon": "^1.4.0"
   },
   "devDependencies": {

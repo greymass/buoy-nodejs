@@ -62,8 +62,8 @@ class Connection {
         this.socket.on('close', () => {
             this.didClose()
         })
-        this.socket.on('message', (data) => {
-            if (!(data instanceof Buffer)) return
+        this.socket.on('message', (data: any, isBinary: boolean) => {
+            if (!isBinary) data = Buffer.from(data, 'utf8')
             this.handleMessage(data)
         })
         this.socket.on('pong', () => {
