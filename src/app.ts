@@ -269,18 +269,6 @@ function handleRequest(request: http.IncomingMessage, response: http.ServerRespo
     response.setHeader('Access-Control-Allow-Headers', '*')
     response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
     response.setHeader('Access-Control-Expose-Headers', 'X-Buoy-Delivery')
-    if (request.method !== 'POST') {
-        response.setHeader('Allow', 'POST, OPTIONS')
-        response.statusCode = request.method === 'OPTIONS' ? 200 : 405
-        response.end()
-        return
-    }
-    if (request.url === '/test') {
-        response.statusCode = 200
-        response.write('Ok')
-        response.end()
-        return
-    }
     if (request.url === '/health_check') {
         broker
             .healthCheck()
@@ -294,6 +282,18 @@ function handleRequest(request: http.IncomingMessage, response: http.ServerRespo
                 response.write(error.message || String(error))
                 response.end()
             })
+        return
+    }
+    if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST, OPTIONS')
+        response.statusCode = request.method === 'OPTIONS' ? 200 : 405
+        response.end()
+        return
+    }
+    if (request.url === '/test') {
+        response.statusCode = 200
+        response.write('Ok')
+        response.end()
         return
     }
     activeRequests++
